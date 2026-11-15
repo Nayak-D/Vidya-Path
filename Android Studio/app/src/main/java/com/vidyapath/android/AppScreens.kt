@@ -58,6 +58,8 @@ import androidx.compose.material.icons.filled.Snooze
 import androidx.compose.material.icons.filled.Spa
 import androidx.compose.material.icons.filled.StickyNote2
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -97,6 +99,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -115,34 +119,25 @@ internal fun AppScreenContent(
     screen: AppScreen,
     data: AppData,
     isBusy: Boolean,
-    authClient: NeonAuthClient,
+    accountStore: LocalAccountStore,
     appStore: LocalAppStore,
-    pendingCode: PendingEmailCode,
     selectedSubject: String,
     go: (AppScreen) -> Unit,
     replace: (AppScreen) -> Unit,
     back: () -> Unit,
     notify: (String) -> Unit,
-    requestEmailCode: (String, String, Boolean) -> Unit,
-    verifyEmailCode: (String) -> Unit,
+    createAccount: (String, String, String, String) -> Unit,
+    signIn: (String, String) -> Unit,
     saveData: (AppData) -> Unit,
     updateTask: (String) -> Unit,
     saveProfile: suspend (String, String?) -> Unit,
     setSelectedSubject: (String) -> Unit,
 ) {
-    val codeInfo = pendingCode
     when (screen) {
         AppScreen.Splash -> SplashScreen { go(if (data.accountId.isBlank()) AppScreen.Welcome else AppScreen.Home) }
         AppScreen.Welcome -> WelcomeScreen { go(AppScreen.Signup) }
-        AppScreen.Signup -> SignupScreen(isBusy, requestEmailCode, { go(AppScreen.Login) }, back)
-        AppScreen.Login -> LoginScreen(isBusy, { email -> requestEmailCode("", email, false) }, { go(AppScreen.Signup) }, back)
-        AppScreen.VerifyEmail -> VerifyEmailScreen(
-            email = codeInfo.email,
-            isBusy = isBusy,
-            verify = verifyEmailCode,
-            resend = { requestEmailCode(codeInfo.name, codeInfo.email, codeInfo.isSignup) },
-            back = back,
-        )
+        AppScreen.Signup -> SignupScreen(isBusy, createAccount, { go(AppScreen.Login) }, back)
+        AppScreen.Login -> LoginScreen(isBusy, signIn, { go(AppScreen.Signup) }, back)
         AppScreen.SelectSubjects -> SubjectsScreen(
             data = data,
             onChange = saveData,
@@ -225,7 +220,7 @@ internal fun AppScreenContent(
             go(AppScreen.ExamProgress)
         })
         AppScreen.ExamProgress -> ExamProgressScreen(data, back, replace, saveData)
-        AppScreen.Profile -> ProfileScreen(data, go, back, replace, authClient, saveData, notify)
+        AppScreen.Profile -> ProfileScreen(data, go, back, replace, accountStore, saveData, notify)
         AppScreen.EditProfile -> EditProfileScreen(data, appStore, saveProfile, back, notify)
         AppScreen.Settings -> SettingsScreen(data, back, saveData, notify)
     }
@@ -292,13 +287,14 @@ private fun WelcomeScreen(next: () -> Unit) {
 @Composable
 private fun SignupScreen(
     busy: Boolean,
-    requestCode: (String, String, Boolean) -> Unit,
+    createAccount: (String, String, String, String) -> Unit,
     goToLogin: () -> Unit,
     back: () -> Unit,
 ) {
     var name by remember { mutableStateOf("") }
     var email by remember { mutableStateOf("") }
-    var agreed by remember { mutableStateOf(false) }
+    var password by remember { mutableStateOf("") }
+    var confirmation by remember { mutableStateOf("") }
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 28.dp, vertical = 16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -308,25 +304,25 @@ private fun SignupScreen(
         Logo(large = true)
         Text("Create Account", fontSize = 25.sp, fontWeight = FontWeight.Bold)
         AppTextField(name, { name = it }, "Full Name")
-        AppTextField(email, { email = it }, "University Email", keyboardType = KeyboardType.Email)
-        Text("We’ll email you a one-time code to verify your account. No password needed.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Checkbox(checked = agreed, onCheckedChange = { agreed = it })
-            Text("I agree to the Terms & Conditions", fontSize = 13.sp)
-        }
-        PrimaryButton("Sign Up", { requestCode(name, email, true) }, enabled = agreed && !busy)
-        TextButton(onClick = goToLogin) { Text("Already have an account? Login") }
+        AppTextField(email, { email = it }, "Email", keyboardType = KeyboardType.Email)
+        AppTextField(password, { password = it }, "Password", keyboardType = KeyboardType.Password, password = true)
+        AppTextField(confirmation, { confirmation = it }, "Confirm Password", keyboardType = KeyboardType.Password, password = true)
+        PrimaryButton(if (busy) "Creating account..." else "Create Account", {
+            createAccount(name, email, password, confirmation)
+        }, enabled = !busy)
+        TextButton(onClick = goToLogin) { Text("Already have an account? Sign In") }
     }
 }
 
 @Composable
 private fun LoginScreen(
     busy: Boolean,
-    requestCode: (String) -> Unit,
+    signIn: (String, String) -> Unit,
     goToSignup: () -> Unit,
     back: () -> Unit,
 ) {
     var email by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 28.dp, vertical = 18.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -334,35 +330,11 @@ private fun LoginScreen(
     ) {
         AppHeader("Login", back)
         Logo(large = true)
-        Text("Login", fontSize = 27.sp, fontWeight = FontWeight.Bold)
-        AppTextField(email, { email = it }, "University Email", keyboardType = KeyboardType.Email)
-        Text("We’ll email you a one-time code to securely sign in.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        PrimaryButton(if (busy) "Sending code..." else "Email me a sign-in code", { requestCode(email) }, enabled = !busy)
+        Text("Sign In", fontSize = 27.sp, fontWeight = FontWeight.Bold)
+        AppTextField(email, { email = it }, "Email", keyboardType = KeyboardType.Email)
+        AppTextField(password, { password = it }, "Password", keyboardType = KeyboardType.Password, password = true)
+        PrimaryButton(if (busy) "Signing in..." else "Sign In", { signIn(email, password) }, enabled = !busy)
         TextButton(onClick = goToSignup) { Text("Don't have an account? Sign Up") }
-    }
-}
-
-@Composable
-private fun VerifyEmailScreen(
-    email: String,
-    isBusy: Boolean,
-    verify: (String) -> Unit,
-    resend: () -> Unit,
-    back: () -> Unit,
-) {
-    var code by remember { mutableStateOf("") }
-    Column(
-        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 28.dp, vertical = 18.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(18.dp),
-    ) {
-        AppHeader("Verify Email", back)
-        Logo()
-        Text("Check your inbox", fontSize = 24.sp, fontWeight = FontWeight.Bold)
-        Text("Enter the 6-digit sign-in code sent to $email.", textAlign = TextAlign.Center, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        AppTextField(code, { code = it.filter(Char::isDigit).take(6) }, "6-digit verification code", keyboardType = KeyboardType.Number)
-        PrimaryButton(if (isBusy) "Verifying..." else "Verify & Sign In", { verify(code) }, enabled = code.length == 6 && !isBusy)
-        TextButton(onClick = resend, enabled = !isBusy) { Text("Resend code") }
     }
 }
 
@@ -995,7 +967,7 @@ private fun StudyHoursChart(weeks: List<WeekActivity>) {
         go: (AppScreen) -> Unit,
         back: () -> Unit,
         replace: (AppScreen) -> Unit,
-        authClient: NeonAuthClient,
+        accountStore: LocalAccountStore,
         saveData: (AppData) -> Unit,
         notify: (String) -> Unit,
     ) {
@@ -1018,7 +990,7 @@ private fun StudyHoursChart(weeks: List<WeekActivity>) {
                     scope.launch {
                         signingOut = true
                         try {
-                            authClient.signOut()
+                            accountStore.signOut()
                             saveData(AppData())
                             replace(AppScreen.Login)
                         } catch (error: Exception) {
@@ -1240,7 +1212,9 @@ private fun StudyHoursChart(weeks: List<WeekActivity>) {
         onValueChange: (String) -> Unit,
         label: String,
         keyboardType: KeyboardType = KeyboardType.Text,
+        password: Boolean = false,
     ) {
+        var passwordVisible by remember { mutableStateOf(false) }
         OutlinedTextField(
             value = value,
             onValueChange = onValueChange,
@@ -1248,6 +1222,23 @@ private fun StudyHoursChart(weeks: List<WeekActivity>) {
             label = { Text(label) },
             singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
+            visualTransformation = if (password && !passwordVisible) {
+                PasswordVisualTransformation()
+            } else {
+                VisualTransformation.None
+            },
+            trailingIcon = if (password) {
+                {
+                    IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                        Icon(
+                            imageVector = if (passwordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                            contentDescription = if (passwordVisible) "Hide password" else "Show password",
+                        )
+                    }
+                }
+            } else {
+                null
+            },
             shape = RoundedCornerShape(13.dp),
         )
     }
