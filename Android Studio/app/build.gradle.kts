@@ -1,19 +1,9 @@
-import java.util.Properties
-
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
     id("com.google.devtools.ksp")
 }
-
-val localProperties = Properties().apply {
-    val file = rootProject.file("local.properties")
-    if (file.isFile) file.inputStream().use(::load)
-}
-val neonAuthBaseUrl = localProperties.getProperty("neonAuthBaseUrl", "")
-    .replace("\\", "\\\\")
-    .replace("\"", "\\\"")
 
 android {
     namespace = "com.vidyapath.android"
@@ -26,16 +16,10 @@ android {
         versionCode = 1
         versionName = "1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        buildConfigField(
-            "String",
-            "NEON_AUTH_BASE_URL",
-            "\"$neonAuthBaseUrl\"",
-        )
     }
 
     buildFeatures {
         compose = true
-        buildConfig = true
     }
 
     compileOptions {

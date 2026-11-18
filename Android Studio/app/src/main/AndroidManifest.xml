@@ -1,13 +1,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <uses-permission android:name="android.permission.INTERNET" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <application
         android:allowBackup="false"
         android:label="Vidyapath"
         android:supportsRtl="true"
-        android:theme="@style/Theme.Vidyapath"
-        android:usesCleartextTraffic="false">
+        android:theme="@style/Theme.Vidyapath">
         <activity
             android:name=".MainActivity"
             android:configChanges="orientation|screenSize|keyboardHidden"

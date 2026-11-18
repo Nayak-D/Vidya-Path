@@ -46,28 +46,21 @@ class MainActivity : ComponentActivity() {
     }
 }
 enum class AppScreen {
-    Splash, Welcome, Signup, Login, VerifyEmail, SelectSubjects, Home, Planner, AddTask, TaskSuccess,
+    Splash, Welcome, Signup, Login, SelectSubjects, Home, Planner, AddTask, TaskSuccess,
     SetReminder, ReminderNotification, RevisionHistory, AddResource, ResourceSuccess, Resources,
     Progress, SubjectProgress, ProgressAnalysis, ExamSetup, ExamPlan, ExamProgress, Profile,
     EditProfile, ManageSubjects, Settings,
 }
 
-internal data class PendingEmailCode(
-    val name: String,
-    val email: String,
-    val isSignup: Boolean,
-)
-
 @Composable
 private fun VidyapathApp() {
     val context = LocalContext.current
-    val authClient = remember { NeonAuthClient(context.applicationContext, BuildConfig.NEON_AUTH_BASE_URL) }
+    val accountStore = remember { LocalAccountStore(context.applicationContext) }
     val appStore = remember { LocalAppStore(context.applicationContext) }
     val snackbarHost = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
     var appData by remember { mutableStateOf(AppData()) }
     var screenStack by remember { mutableStateOf(listOf(AppScreen.Splash)) }
-    var pendingCode by remember { mutableStateOf(PendingEmailCode("", "", false)) }
     var isBusy by remember { mutableStateOf(false) }
     var isRestoringSession by remember { mutableStateOf(true) }
     var startupError by remember { mutableStateOf<String?>(null) }
@@ -95,15 +88,15 @@ private fun VidyapathApp() {
         if (next.accountId.isNotBlank()) appStore.save(next)
     }
 
-    fun installUser(user: AuthUser) {
+    fun installUser(user: LocalUser) {
         val restored = appStore.load(user.id).copy(accountId = user.id, name = user.name, email = user.email)
         saveData(restored)
         replace(if (restored.onboarded) AppScreen.Home else AppScreen.SelectSubjects)
     }
 
-    LaunchedEffect(authClient) {
+    LaunchedEffect(accountStore) {
         try {
-            authClient.restoreSession()?.let(::installUser)
+            accountStore.restoreSession()?.let(::installUser)
         } catch (error: Exception) {
             startupError = error.message ?: "Unable to restore the saved login."
         } finally {
@@ -111,46 +104,30 @@ private fun VidyapathApp() {
         }
     }
 
-    fun requestEmailCode(name: String, email: String, isSignup: Boolean) {
-        val normalizedName = name.trim()
-        val normalizedEmail = email.trim().lowercase()
-        if (!normalizedEmail.matches(Regex("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$"))) {
-            notify("Enter a valid email address.")
-            return
-        }
-        if (isSignup && normalizedName.isBlank()) {
-            notify("Enter your full name.")
-            return
-        }
+    fun createAccount(name: String, email: String, password: String, confirmation: String) {
         coroutineScope.launch {
             if (isBusy) return@launch
             isBusy = true
             try {
-                authClient.sendEmailCode(normalizedEmail)
-                pendingCode = PendingEmailCode(normalizedName, normalizedEmail, isSignup)
-                if (screenStack.lastOrNull() != AppScreen.VerifyEmail) push(AppScreen.VerifyEmail)
-                notify("A six-digit code was sent to your email.")
+                installUser(accountStore.createAccount(name, email, password, confirmation))
+                notify("Account created on this device.")
             } catch (error: Exception) {
-                notify(error.message ?: "Unable to send a verification code.")
+                notify(error.message ?: "Unable to create the local account.")
             } finally {
                 isBusy = false
             }
         }
     }
 
-    fun verifyEmailCode(code: String) {
-        if (code.length != 6 || code.any { !it.isDigit() }) {
-            notify("Enter the six-digit code from your email.")
-            return
-        }
+    fun signIn(email: String, password: String) {
         coroutineScope.launch {
             if (isBusy) return@launch
             isBusy = true
             try {
-                installUser(authClient.signIn(pendingCode.email, code, pendingCode.name.takeIf { pendingCode.isSignup }))
-                notify("Email verified. You are signed in.")
+                installUser(accountStore.signIn(email, password))
+                notify("Signed in.")
             } catch (error: Exception) {
-                notify(error.message ?: "Unable to verify this code.")
+                notify(error.message ?: "Unable to sign in.")
             } finally {
                 isBusy = false
             }
@@ -167,7 +144,7 @@ private fun VidyapathApp() {
     suspend fun saveProfile(name: String, avatarFileName: String?) {
         val normalized = name.trim()
         require(normalized.isNotBlank()) { "Enter your name to continue." }
-        if (normalized != appData.name) authClient.updateName(normalized)
+        if (normalized != appData.name) accountStore.updateName(appData.email, normalized)
         val previousPhoto = appData.avatarFileName
         saveData(appData.copy(name = normalized, avatarFileName = avatarFileName))
         if (previousPhoto != avatarFileName) appStore.deletePhoto(appData.accountId, previousPhoto)
@@ -202,16 +179,15 @@ private fun VidyapathApp() {
                             screen = screen,
                             data = appData,
                             isBusy = isBusy,
-                            authClient = authClient,
+                            accountStore = accountStore,
                             appStore = appStore,
-                            pendingCode = pendingCode,
                             selectedSubject = selectedSubject,
                             go = ::push,
                             replace = ::replace,
                             back = ::back,
                             notify = ::notify,
-                            requestEmailCode = ::requestEmailCode,
-                            verifyEmailCode = ::verifyEmailCode,
+                            createAccount = ::createAccount,
+                            signIn = ::signIn,
                             saveData = ::saveData,
                             updateTask = ::updateTask,
                             saveProfile = ::saveProfile,
