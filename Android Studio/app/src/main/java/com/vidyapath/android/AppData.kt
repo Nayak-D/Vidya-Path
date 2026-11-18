@@ -6,6 +6,8 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.util.Base64
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -86,17 +88,135 @@ val SUBJECT_TOPICS = mapOf(
 )
 
 class LocalAppStore(context: Context) {
+    private val db = AppDatabase.getDatabase(context)
+    private val dao = db.appDao()
     private val preferences = context.getSharedPreferences("vidyapath_study_data", Context.MODE_PRIVATE)
     private val filesRoot = File(context.filesDir, "account_files").apply { mkdirs() }
 
     fun load(accountId: String): AppData {
-        val raw = preferences.getString(stateKey(accountId), null) ?: return AppData(accountId = accountId)
-        return decodeState(JSONObject(raw), accountId)
+        return runBlocking(Dispatchers.IO) {
+            val account = dao.getUserAccount(accountId)
+            if (account != null) {
+                val tasks = dao.getTasks(accountId).map {
+                    StudyTask(it.id, it.subject, it.topic, it.date, it.minutes, it.priority, it.done, it.completedAt)
+                }
+                val reminders = dao.getReminders(accountId).map {
+                    StudyReminder(it.id, it.subject, it.topic, it.date, it.intervalDays, it.done)
+                }
+                val resources = dao.getResources(accountId).map {
+                    StudyResource(it.id, it.type, it.title, it.url, it.subject, it.topic, it.fileName, it.originalFileName)
+                }
+                val subjects = runCatching { JSONArray(account.subjectsJson).toStringList() }.getOrDefault(DEFAULT_SUBJECTS)
+                val completedTopics = runCatching {
+                    val json = JSONObject(account.completedTopicsJson)
+                    json.keys().asSequence().associateWith { sub ->
+                        val tJson = json.optJSONObject(sub)
+                        if (tJson == null) emptyMap() else tJson.keys().asSequence().associateWith { top -> tJson.optLong(top) }
+                    }
+                }.getOrDefault(emptyMap())
+                val examPlan = runCatching {
+                    val array = JSONArray(account.examPlanJson)
+                    (0 until array.length()).mapNotNull { i ->
+                        val obj = array.optJSONObject(i) ?: return@mapNotNull null
+                        ExamItem(obj.optString("range"), obj.optString("topic"), obj.optBoolean("done"))
+                    }
+                }.getOrDefault(emptyList())
+
+                AppData(
+                    accountId = account.accountId,
+                    name = account.name,
+                    email = account.email,
+                    onboarded = account.onboarded,
+                    subjects = subjects,
+                    tasks = tasks,
+                    reminders = reminders,
+                    resources = resources,
+                    completedTopics = completedTopics,
+                    examSubject = account.examSubject,
+                    examDate = account.examDate,
+                    examPlan = examPlan,
+                    notifications = account.notifications,
+                    darkMode = account.darkMode,
+                    language = account.language,
+                    avatarFileName = account.avatarFileName,
+                )
+            } else {
+                val raw = preferences.getString(stateKey(accountId), null)
+                if (raw != null) {
+                    val legacyData = decodeState(JSONObject(raw), accountId)
+                    save(legacyData)
+                    legacyData
+                } else {
+                    AppData(accountId = accountId)
+                }
+            }
+        }
     }
 
     fun save(data: AppData) {
         if (data.accountId.isBlank()) return
         preferences.edit().putString(stateKey(data.accountId), encodeState(data).toString()).apply()
+        runBlocking(Dispatchers.IO) {
+            val accountEntity = UserAccountEntity(
+                accountId = data.accountId,
+                name = data.name,
+                email = data.email,
+                onboarded = data.onboarded,
+                subjectsJson = JSONArray(data.subjects).toString(),
+                completedTopicsJson = JSONObject().apply {
+                    data.completedTopics.forEach { (subject, topics) ->
+                        put(subject, JSONObject().apply { topics.forEach { (t, ts) -> put(t, ts) } })
+                    }
+                }.toString(),
+                examSubject = data.examSubject,
+                examDate = data.examDate,
+                examPlanJson = JSONArray().apply {
+                    data.examPlan.forEach { item -> put(JSONObject().put("range", item.range).put("topic", item.topic).put("done", item.done)) }
+                }.toString(),
+                notifications = data.notifications,
+                darkMode = data.darkMode,
+                language = data.language,
+                avatarFileName = data.avatarFileName,
+            )
+            val taskEntities = data.tasks.map { task ->
+                StudyTaskEntity(
+                    id = task.id,
+                    accountId = data.accountId,
+                    subject = task.subject,
+                    topic = task.topic,
+                    date = task.date,
+                    minutes = task.minutes,
+                    priority = task.priority,
+                    done = task.done,
+                    completedAt = task.completedAt,
+                )
+            }
+            val reminderEntities = data.reminders.map { reminder ->
+                StudyReminderEntity(
+                    id = reminder.id,
+                    accountId = data.accountId,
+                    subject = reminder.subject,
+                    topic = reminder.topic,
+                    date = reminder.date,
+                    intervalDays = reminder.intervalDays,
+                    done = reminder.done,
+                )
+            }
+            val resourceEntities = data.resources.map { resource ->
+                StudyResourceEntity(
+                    id = resource.id,
+                    accountId = data.accountId,
+                    type = resource.type,
+                    title = resource.title,
+                    url = resource.url,
+                    subject = resource.subject,
+                    topic = resource.topic,
+                    fileName = resource.fileName,
+                    originalFileName = resource.originalFileName,
+                )
+            }
+            dao.saveFullAppData(accountEntity, taskEntities, reminderEntities, resourceEntities)
+        }
     }
 
     fun photoFile(accountId: String, fileName: String?): File? {
